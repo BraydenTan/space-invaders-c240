@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Invaders</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      display: grid;
+      min-height: 100vh;
+      margin: 0;
+      place-items: center;
+      background: #06162e;
+    }
+
+    canvas {
+      display: block;
+      width: min(800px, 100vw);
+      height: auto;
+      background: #06162e;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="800" height="600" aria-label="Space Invaders game canvas"></canvas>
+
+  <script>
+    "use strict";
+
+    const canvas = document.querySelector("#game");
+    const context = canvas.getContext("2d");
+    const playArea = {
+      margin: 18,
+      frameWidth: 4,
+      get left() {
+        return this.margin + this.frameWidth + 2;
+      },
+      get right() {
+        return canvas.width - this.left;
+      },
+      get top() {
+        return this.margin + this.frameWidth + 2;
+      },
+      get bottom() {
+        return canvas.height - this.margin - this.frameWidth - 2;
+      }
+    };
+    const player = {
+      x: canvas.width / 2 - 24,
+      y: canvas.height - 44,
+      width: 48,
+      height: 16,
+      speed: 360,
+      lives: 3,
+      invulnerableTime: 0,
+      shotCooldown: 0
+    };
+    const keys = {
+      left: false,
+      right: false,
+      fire: false
+    };
+    const stars = Array.from({ length: 96 }, (_, index) => ({
+      x: (index * 131 + 47) % canvas.width,
+      y: (index * 197 + 19) % canvas.height,
+      size: index % 12 === 0 ? 2 : 1
+    }));
+    const alienTypes = {
+      glider: {
+        color: "#ff7fa8",
+        frames: [
+          ["0000110000", "0011111100", "0111111110", "1101111011", "1111111111", "0011111100", "0010010100", "0100000010"],
+          ["1000110001", "0011111100", "0111111110", "1101111011", "1111111111", "0011111100", "0100100100", "0010000100"]
+        ]
+      },
+      relay: {
+        color: "#ffd166",
+        frames: [
+          ["0010000100", "0001111000", "0011111100", "0110110110", "1111111111", "0111111110", "0010101000", "0110000110"],
+          ["0001001000", "0011111100", "0111111110", "0110110110", "1111111111", "0111111110", "0101010100", "1000000001"]
+        ]
+      },
+      bloom: {
+        color: "#72e0a7",
+        frames: [
+          ["0001100000", "0011111000", "0111111100", "1110110111", "1111111111", "0011111000", "0001100000", "0010010010"],
+          ["0011001000", "0011111000", "0111111100", "1110110111", "1111111111", "0001111000", "0010010010", "0100000001"]
+        ]
+      }
+    };
+    const alienRows = ["glider", "relay", "relay", "bloom", "bloom"];
+    const alienColumns = 11;
+    const alienWidth = 30;
+    const alienHeight = 24;
+    const alienStepX = 52;
+    const alienStepY = 44;
+    const formationWidth = (alienColumns - 1) * alienStepX + alienWidth;
+    const formation = {
+      x: 0,
+      y: 60,
+      direction: 1,
+      speed: 42,
+      dropDistance: 18,
+      poseTime: 0,
+      fireTimer: 1
+    };
+    const playerBullets = [];
+    const invaderBullets = [];
+    let invaders = [];
+    let gameState = "playing";
+    let elapsedTime = 0;
+    let score = 0;
+
+    function setKeyState(event, isPressed) {
+      if (event.code === "ArrowLeft") {
+        keys.left = isPressed;
+        event.preventDefault();
+      } else if (event.code === "ArrowRight") {
+        keys.right = isPressed;
+        event.preventDefault();
+      } else if (event.code === "Space") {
+        keys.fire = isPressed;
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Enter" && gameState !== "playing") {
+        event.preventDefault();
+        resetGame();
+        return;
+      }
+      if (event.code === "Space" && !event.repeat && gameState === "playing" && player.shotCooldown === 0) {
+        firePlayerBullet();
+        player.shotCooldown = 0.32;
+      }
+      setKeyState(event, true);
+    });
+    window.addEventListener("keyup", (event) => setKeyState(event, false));
+    window.addEventListener("blur", () => {
+      keys.left = false;
+      keys.right = false;
+      keys.fire = false;
+    });
+
+    function resetGame() {
+      player.x = canvas.width / 2 - player.width / 2;
+      player.lives = 3;
+      player.invulnerableTime = 0;
+      player.shotCooldown = 0;
+      elapsedTime = 0;
+      score = 0;
+      keys.left = false;
+      keys.right = false;
+      keys.fire = false;
+      playerBullets.length = 0;
+      invaderBullets.length = 0;
+      formation.x = (canvas.width - formationWidth) / 2;
+      formation.y = 60;
+      formation.direction = 1;
+      formation.speed = 42;
+      formation.poseTime = 0;
+      formation.fireTimer = 1;
+      invaders = [];
+
+      for (let row = 0; row < alienRows.length; row++) {
+        for (let column = 0; column < alienColumns; column++) {
+          invaders.push({ row, column, type: alienRows[row] });
+        }
+      }
+
+      gameState = "playing";
+    }
+
+    function firePlayerBullet() {
+      playerBullets.push({
+        x: player.x + player.width / 2 - 2,
+        y: player.y - 12,
+        width: 4,
+        height: 12,
+        speed: 430
+      });
+    }
+
+    function fireInvaderBullet() {
+      if (invaders.length === 0) {
+        return;
+      }
+
+      const shooter = invaders[Math.floor(Math.random() * invaders.length)];
+      invaderBullets.push({
+        x: formation.x + shooter.column * alienStepX + alienWidth / 2 - 2,
+        y: formation.y + shooter.row * alienStepY + alienHeight,
+        width: 4,
+        height: 12,
+        speed: 190
+      });
+    }
+
+    function overlaps(first, second) {
+      return first.x < second.x + second.width &&
+        first.x + first.width > second.x &&
+        first.y < second.y + second.height &&
+        first.y + first.height > second.y;
+    }
+
+    function updatePlayer(deltaTime) {
+      const direction = Number(keys.right) - Number(keys.left);
+      player.x += direction * player.speed * deltaTime;
+      player.x = Math.max(
+        playArea.left,
+        Math.min(playArea.right - player.width, player.x)
+      );
+
+      player.invulnerableTime = Math.max(0, player.invulnerableTime - deltaTime);
+      player.shotCooldown = Math.max(0, player.shotCooldown - deltaTime);
+      if (keys.fire && player.shotCooldown === 0) {
+        firePlayerBullet();
+        player.shotCooldown = 0.32;
+      }
+    }
+
+    function updateFormation(deltaTime) {
+      formation.poseTime += deltaTime;
+      formation.speed = Math.min(115, 42 + (55 - invaders.length) * 1.5);
+      formation.x += formation.direction * formation.speed * deltaTime;
+
+      if (formation.x + formationWidth >= playArea.right) {
+        formation.x = playArea.right - formationWidth;
+        formation.direction = -1;
+        formation.y += formation.dropDistance;
+      } else if (formation.x <= playArea.left) {
+        formation.x = playArea.left;
+        formation.direction = 1;
+        formation.y += formation.dropDistance;
+      }
+
+      const lowestRow = invaders.reduce((lowest, invader) => Math.max(lowest, invader.row), -1);
+      if (lowestRow >= 0 && formation.y + lowestRow * alienStepY + alienHeight >= player.y - 20) {
+        gameState = "lost";
+      }
+
+      formation.fireTimer -= deltaTime;
+      if (formation.fireTimer <= 0) {
+        fireInvaderBullet();
+        formation.fireTimer = Math.max(0.45, 1.3 - (55 - invaders.length) * 0.012);
+      }
+    }
+
+    function updatePlayerBullets(deltaTime) {
+      for (let index = playerBullets.length - 1; index >= 0; index--) {
+        const bullet = playerBullets[index];
+        bullet.y -= bullet.speed * deltaTime;
+        const hitIndex = invaders.findIndex((invader) => overlaps(bullet, {
+          x: formation.x + invader.column * alienStepX,
+          y: formation.y + invader.row * alienStepY,
+          width: alienWidth,
+          height: alienHeight
+        }));
+
+        if (hitIndex !== -1) {
+          invaders.splice(hitIndex, 1);
+          playerBullets.splice(index, 1);
+          score += 100;
+        } else if (bullet.y + bullet.height < playArea.top) {
+          playerBullets.splice(index, 1);
+        }
+      }
+    }
+
+    function updateInvaderBullets(deltaTime) {
+      for (let index = invaderBullets.length - 1; index >= 0; index--) {
+        const bullet = invaderBullets[index];
+        bullet.y += bullet.speed * deltaTime;
+
+        if (overlaps(bullet, player)) {
+          invaderBullets.splice(index, 1);
+          if (player.invulnerableTime === 0) {
+            player.lives--;
+            player.invulnerableTime = 1;
+            if (player.lives <= 0) {
+              gameState = "lost";
+            }
+          }
+        } else if (bullet.y > playArea.bottom) {
+          invaderBullets.splice(index, 1);
+        }
+      }
+    }
+
+    function update(deltaTime) {
+      if (gameState !== "playing") {
+        return;
+      }
+      if (invaders.length === 0) {
+        gameState = "won";
+        return;
+      }
+
+      elapsedTime += deltaTime;
+      updatePlayer(deltaTime);
+      updateFormation(deltaTime);
+      if (gameState !== "playing") {
+        return;
+      }
+      updatePlayerBullets(deltaTime);
+      if (invaders.length === 0) {
+        gameState = "won";
+        return;
+      }
+      updateInvaderBullets(deltaTime);
+    }
+
+    function drawBackground() {
+      context.fillStyle = "#06162e";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      context.fillStyle = "#c5dcff";
+      for (const star of stars) {
+        context.fillRect(star.x, star.y, star.size, star.size);
+      }
+
+      context.strokeStyle = "#5b83b9";
+      context.lineWidth = playArea.frameWidth;
+      context.strokeRect(
+        playArea.margin,
+        playArea.margin,
+        canvas.width - playArea.margin * 2,
+        canvas.height - playArea.margin * 2
+      );
+    }
+
+    function drawInvaders() {
+      const pose = Math.floor(formation.poseTime / 0.32) % 2;
+      for (const invader of invaders) {
+        const sprite = alienTypes[invader.type].frames[pose];
+        context.fillStyle = alienTypes[invader.type].color;
+        for (let row = 0; row < sprite.length; row++) {
+          for (let column = 0; column < sprite[row].length; column++) {
+            if (sprite[row][column] === "1") {
+              context.fillRect(
+                formation.x + invader.column * alienStepX + column * 3,
+                formation.y + invader.row * alienStepY + row * 3,
+                3,
+                3
+              );
+            }
+          }
+        }
+      }
+    }
+
+    function drawBullets(bullets, color) {
+      context.fillStyle = color;
+      for (const bullet of bullets) {
+        context.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+      }
+    }
+
+    function draw() {
+      drawBackground();
+      drawInvaders();
+      drawBullets(playerBullets, "#8be9ff");
+      drawBullets(invaderBullets, "#ff9d76");
+
+      if (player.invulnerableTime === 0 || Math.floor(elapsedTime * 12) % 2 === 0) {
+        context.fillStyle = "#168cff";
+        context.fillRect(player.x, player.y, player.width, player.height);
+      }
+
+      context.fillStyle = "#e3efff";
+      context.font = "16px monospace";
+      context.textAlign = "left";
+      context.fillText(`SCORE: ${score}`, playArea.left + 8, playArea.top + 20);
+      context.textAlign = "center";
+      context.fillText(`LIVES: ${player.lives}`, canvas.width / 2, playArea.top + 20);
+      context.textAlign = "right";
+      context.fillText(`INVADERS: ${invaders.length}`, playArea.right - 8, playArea.top + 20);
+
+      if (gameState !== "playing") {
+        context.fillStyle = "rgba(2, 8, 24, 0.78)";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.textAlign = "center";
+        context.fillStyle = gameState === "won" ? "#72e0a7" : "#ff7fa8";
+        context.font = "bold 36px monospace";
+        context.fillText(
+          gameState === "won" ? "WAVE CLEARED" : "GAME OVER",
+          canvas.width / 2,
+          canvas.height / 2
+        );
+        context.fillStyle = "#e3efff";
+        context.font = "16px monospace";
+        context.fillText(`FINAL SCORE: ${score}`, canvas.width / 2, canvas.height / 2 + 36);
+        context.fillText("Press Enter to restart", canvas.width / 2, canvas.height / 2 + 64);
+      }
+
+      context.fillStyle = "#c5dcff";
+      context.font = "12px monospace";
+      context.textAlign = "right";
+      context.fillText("Name: E65Q - Brayden Tan", canvas.width - 8, canvas.height - 4);
+    }
+
+    resetGame();
+    let previousFrameTime = 0;
+
+    function gameLoop(timestamp) {
+      const deltaTime = Math.min((timestamp - previousFrameTime) / 1000, 0.05);
+      previousFrameTime = timestamp;
+
+      update(deltaTime);
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
